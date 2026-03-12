@@ -121,6 +121,18 @@ CITIES = {
     "Munich":       {"slug":"munich","unit":"C","flag":"DE",
         "lat":48.1351,"lon":11.5820,"tz":"Europe/Berlin",
         "mb_url":"https://www.meteoblue.com/en/weather/forecast/multimodel/munich_germany_2867714"},
+    "Shanghai":     {"slug":"shanghai","unit":"C","flag":"CN",
+        "lat":31.2304,"lon":121.4737,"tz":"Asia/Shanghai",
+        "mb_url":"https://www.meteoblue.com/en/weather/forecast/multimodel/shanghai_china_1796236"},
+    "Tokyo":        {"slug":"tokyo","unit":"C","flag":"JP",
+        "lat":35.6762,"lon":139.6503,"tz":"Asia/Tokyo",
+        "mb_url":"https://www.meteoblue.com/en/weather/forecast/multimodel/tokyo_japan_1850147"},
+    "Singapore":    {"slug":"singapore","unit":"C","flag":"SG",
+        "lat":1.3521,"lon":103.8198,"tz":"Asia/Singapore",
+        "mb_url":"https://www.meteoblue.com/en/weather/forecast/multimodel/singapore_singapore_1880252"},
+    "Tel Aviv":     {"slug":"tel-aviv","unit":"C","flag":"IL",
+        "lat":32.0853,"lon":34.7818,"tz":"Asia/Jerusalem",
+        "mb_url":"https://www.meteoblue.com/en/weather/forecast/multimodel/tel-aviv_israel_293397"},
 }
 
 MODEL_DISPLAY = {
@@ -154,6 +166,10 @@ MODEL_DISPLAY = {
 #   Lucknow      → VILK  (Amausi / Chaudhary Charan Singh)
 #   Sao Paulo    → SBSP  (Congonhas — estación más usada para Sao Paulo ciudad)
 #   Munich       → EDDM  (Munich International)
+#   Shanghai     → ZSPD  (Pudong International)
+#   Tokyo        → RJTT  (Haneda International)
+#   Singapore    → WSSS  (Changi International)
+#   Tel Aviv     → LLBG  (Ben Gurion International)
 
 CITY_ICAO = {
     "New York":     "KLGA",   # LaGuardia — oficial Polymarket NYC
@@ -173,6 +189,10 @@ CITY_ICAO = {
     "Lucknow":      "VILK",
     "Sao Paulo":    "SBSP",   # Congonhas
     "Munich":       "EDDM",
+    "Shanghai":     "ZSPD",   # Pudong International
+    "Tokyo":        "RJTT",   # Haneda International
+    "Singapore":    "WSSS",   # Changi International
+    "Tel Aviv":     "LLBG",   # Ben Gurion International
 }
 
 # ── Logging ───────────────────────────────────────────────────────────────────
