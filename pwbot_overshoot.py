@@ -8,7 +8,7 @@ LÓGICA CENTRAL:
   1. Descargar pronóstico Meteoblue para cada ciudad.
   2. Tomar el MÁXIMO de todos los modelos disponibles.
   3. Buscar mercados T+1 o T+2 SOLAMENTE donde:
-       threshold_del_mercado >= max_modelo + OVERSHOOT_MIN (1.5°)
+       threshold_del_mercado >= max_modelo + 1.5°C  (o 2.7°F para ciudades US)
        Sin techo: cuanto más lejos, mejor (más separado = más seguro)
   4. En esos mercados, comprar token NO si NO_ask_CLOB <= 0.995
   5. Priorizar por ROE ajustado al tiempo (retorno/día hasta cobro).
@@ -43,8 +43,9 @@ POSITIONS_CSV = "pwbot_overshoot_positions.csv"
 CLOSED_CSV    = "pwbot_overshoot_closed.csv"
 
 # ── Parámetros de estrategia ──────────────────────────────────────────────────
-OVERSHOOT_MIN   = 1.5   # °C/°F mínimo que debe superar el threshold al max_modelo
-                        # Sin techo: si es más, mejor (más separado = más seguro)
+OVERSHOOT_MIN_C = 1.5   # °C mínimo de overshoot para ciudades en Celsius
+OVERSHOOT_MIN_F = 2.7   # °F equivalente (1.5°C × 9/5 = 2.7°F)
+# Sin techo en ninguna escala: más overshoot = más seguro
 NO_MAX_PRICE    = 0.995 # precio máximo del token NO (ask real CLOB) para entrar
                         # NO_ask <= 0.995 significa que el mercado cotiza el NO casi a par
 SIM_STAKE       = 5.0   # dólares simulados por posición
@@ -694,27 +695,35 @@ def calc_roe_per_day(no_ask: float, days_ahead: int) -> float:
     roe_total = (1.0 - no_ask) / no_ask * 100
     return round(roe_total / days_ahead, 2)
 
-def calc_score(no_ask: float, overshoot: float, days_ahead: int, mb_std_dev: float) -> float:
+def calc_score(no_ask: float, overshoot: float, overshoot_min: float,
+               days_ahead: int, mb_std_dev: float) -> float:
     """
     Score compuesto para priorizar entre candidatos.
-    
-    Componentes:
-      - ROE/día: más retorno por día → mejor
-      - overshoot: más separado del máximo modelo → más seguro
-      - std_dev: menor dispersión entre modelos → más confianza
-      - days_ahead: T+1 es más inminente (menos tiempo de erosión)
-    
-    Todos normalizados y sumados con pesos.
+
+    PRIORIDAD: SEGURIDAD sobre retorno.
+    Cuanto mas lejos este el threshold del maximo modelo, mas improbable
+    que se alcance.
+
+      1. overshoot normalizado — componente dominante. Se normaliza sobre
+                                 el minimo de la unidad de la ciudad para
+                                 que 1 grado extra en C y en F sean comparables.
+      2. ROE/dia              — tiebreaker.
+      3. std_dev              — penalizacion por dispersion entre modelos.
     """
-    roe   = calc_roe_per_day(no_ask, days_ahead)
-    # Penalizar std_dev alto (modelos muy dispersos = más incertidumbre)
-    std_penalty = max(0, mb_std_dev - 1.0) * 10
-    # Bonus por overshoot mayor (cuanto más lejos del pronóstico, más seguro)
-    # Normalizado: cada grado extra sobre el mínimo suma 20 puntos
-    overshoot_bonus = max(0, overshoot - OVERSHOOT_MIN) * 20
-    # T+1 bonus: menos tiempo en riesgo
-    t1_bonus = 5.0 if days_ahead == 1 else 0.0
-    return round(roe + overshoot_bonus + t1_bonus - std_penalty, 3)
+    # Overshoot normalizado: cuantos "minimos" extra tiene por encima del umbral
+    # Ej: overshoot=4.18°C, min=1.5°C → exceso=2.68 → 2.68/1.5=1.79 unidades normalizadas
+    # Ej: overshoot=8.83°F, min=2.7°F → exceso=6.13 → 6.13/2.7=2.27 unidades normalizadas
+    # Ambos comparables entre ciudades C y F
+    exceso_normalizado = max(0, overshoot - overshoot_min) / overshoot_min
+    overshoot_bonus = exceso_normalizado * 20
+
+    # ROE: tiebreaker
+    roe = calc_roe_per_day(no_ask, days_ahead)
+
+    # Penalizar dispersion alta entre modelos
+    std_penalty = max(0, mb_std_dev - 1.0) * 5.0
+
+    return round(overshoot_bonus + roe - std_penalty, 3)
 
 # ── Exportar CSV de posiciones ────────────────────────────────────────────────
 def export_open_positions_csv(db: OvershootDB):
@@ -1018,10 +1027,12 @@ class OvershootBot:
             overshoot = round(threshold - max_model, 3)
 
             # ¿El threshold supera al max_modelo en al menos OVERSHOOT_MIN?
-            if overshoot < OVERSHOOT_MIN:
-                log.debug(
-                    f"    {city} T+{d} threshold={threshold}° — "
-                    f"overshoot={overshoot:.2f}° < mínimo {OVERSHOOT_MIN}°"
+            overshoot_min = OVERSHOOT_MIN_F if fc["unit"] == "F" else OVERSHOOT_MIN_C
+            if overshoot < overshoot_min:
+                log.info(
+                    f"    ↳ T+{d} threshold={threshold}°{fc['unit']}  "
+                    f"mb_max={max_model}°  overshoot={overshoot:+.2f}°  "
+                    f"(min={overshoot_min}°{fc['unit']})  — muy cerca, skip"
                 )
                 continue
 
@@ -1032,19 +1043,19 @@ class OvershootBot:
             yes_bid = prices.get("yes_bid")
 
             if no_ask is None:
-                log.debug(f"    {city} T+{d} threshold={threshold}°: sin precio NO")
+                log.info(f"    ↳ T+{d} threshold={threshold}°{fc['unit']}  mb_max={max_model}°  overshoot={overshoot:+.2f}°  — sin precio CLOB")
                 continue
 
             # ¿El ask real del token NO es ≤ 0.995?
             if no_ask > NO_MAX_PRICE:
-                log.debug(
-                    f"    {city} T+{d} threshold={threshold}°: "
-                    f"no_ask={no_ask:.4f} > {NO_MAX_PRICE} — descartado"
+                log.info(
+                    f"    ↳ T+{d} threshold={threshold}°{fc['unit']}  mb_max={max_model}°  "
+                    f"overshoot={overshoot:+.2f}°  no_ask={no_ask:.4f} > {NO_MAX_PRICE}  — precio muy alto, skip"
                 )
                 continue
 
             roe_day = calc_roe_per_day(no_ask, d)
-            score   = calc_score(no_ask, overshoot, d, fc["std_dev"])
+            score   = calc_score(no_ask, overshoot, overshoot_min, d, fc["std_dev"])
 
             candidates.append({
                 "city":       city,
@@ -1200,7 +1211,7 @@ def main():
     print(f"  Positions CSV: {os.path.abspath(POSITIONS_CSV)}")
     print(f"  Closed CSV:    {os.path.abspath(CLOSED_CSV)}")
     print(f"  Modo:          SIM (sin órdenes reales)")
-    print(f"  Overshoot:     ≥ {OVERSHOOT_MIN}° (sin techo, más es mejor)")
+    print(f"  Overshoot:     ≥ {OVERSHOOT_MIN_C}°C  /  ≥ {OVERSHOOT_MIN_F}°F  (sin techo, más es mejor)")
     print(f"  NO_MAX_PRICE:  ask CLOB ≤ {NO_MAX_PRICE} (precio real de venta)")
     print(f"  Stop loss:     {(1-STOP_MULTIPLIER)*100:.0f}% del precio de entrada")
     print(f"  Stake sim:     ${SIM_STAKE} por posición")
