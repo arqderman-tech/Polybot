@@ -1,0 +1,12 @@
+# Base de datos local — NO commitear
+pwbot_overshoot.db
+
+# Log — NO commitear (muy grande, se sube como artifact en Actions)
+pwbot_overshoot.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
