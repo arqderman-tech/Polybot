@@ -41,6 +41,8 @@ GAMMA_HOST  = "https://gamma-api.polymarket.com"
 DB_PATH     = "pwbot_overshoot.db"
 POSITIONS_CSV = "pwbot_overshoot_positions.csv"
 CLOSED_CSV    = "pwbot_overshoot_closed.csv"
+DASHBOARD_OPEN_HTML   = "index.html"
+DASHBOARD_CLOSED_HTML = "closed.html"
 
 # ── Parámetros de estrategia ──────────────────────────────────────────────────
 OVERSHOOT_MIN_C = 1.5   # °C mínimo de overshoot para ciudades en Celsius
@@ -55,7 +57,7 @@ STOP_MULTIPLIER = 0.80  # si no_price baja a 80% del entry → stop loss
 # False = solo loguear que expiró, no determinar WIN/LOSS todavía.
 #         Permite revisar manualmente las apuestas antes de confiar en la fuente.
 # True  = consultar IEM ASOS + Open-Meteo y cerrar automáticamente.
-RESOLVE_EXPIRED = False
+RESOLVE_EXPIRED = True
 
 MIN_DAYS = 1  # T+1
 MAX_DAYS = 2  # T+2, nunca T+0 ni T+3+
@@ -834,6 +836,261 @@ def export_closed_csv(db: OvershootDB):
         w.writerows([list(r) for r in rows])
     log.info(f"  📁 Closed CSV actualizado: {len(rows)} posiciones cerradas → {CLOSED_CSV}")
 
+# ── Dashboard HTML ────────────────────────────────────────────────────────────
+
+_HTML_HEAD = """<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+:root{{--bg:#0a0c0f;--surface:#111318;--border:#1e2229;--accent:#00e5a0;--loss:#ff4d6d;--gain:#00e5a0;--neutral:#6b7280;--text:#e2e8f0;--muted:#4b5563;--warn:#f5a623}}
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:var(--bg);color:var(--text);font-family:'JetBrains Mono',monospace;min-height:100vh;padding:28px 20px}}
+a{{color:var(--accent);text-decoration:none}}a:hover{{text-decoration:underline}}
+header{{margin-bottom:28px;border-left:3px solid var(--accent);padding-left:14px}}
+header h1{{font-family:'Syne',sans-serif;font-size:1.4rem;font-weight:800;color:#fff}}
+header p{{font-size:.7rem;color:var(--neutral);margin-top:4px}}
+.nav{{display:flex;gap:12px;margin-bottom:20px;font-size:.75rem}}
+.nav a{{padding:5px 14px;border:1px solid var(--border);border-radius:4px;color:var(--muted)}}
+.nav a.active{{border-color:var(--accent);color:var(--accent);background:#0d1f19}}
+.summary{{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px}}
+.stat{{background:var(--surface);border:1px solid var(--border);padding:10px 18px;border-radius:6px;min-width:110px}}
+.stat-label{{font-size:.62rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}}
+.stat-val{{font-size:1.15rem;font-weight:700;margin-top:3px}}
+.day-group{{margin-bottom:26px}}
+.day-header{{display:flex;align-items:center;gap:10px;margin-bottom:8px}}
+.day-label{{font-family:'Syne',sans-serif;font-size:.82rem;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.05em}}
+.day-count{{font-size:.68rem;background:#1a2a22;color:var(--accent);border:1px solid #1f3d2e;padding:2px 8px;border-radius:20px}}
+.day-line{{flex:1;height:1px;background:var(--border)}}
+table{{width:100%;border-collapse:collapse;font-size:.74rem}}
+thead tr{{background:#0d1117}}
+th{{padding:7px 10px;text-align:left;color:var(--muted);font-size:.62rem;text-transform:uppercase;letter-spacing:.06em;font-weight:600;border-bottom:1px solid var(--border)}}
+th.r,td.r{{text-align:right}}
+tbody tr{{border-bottom:1px solid #13171e;transition:background .1s}}
+tbody tr:hover{{background:#13181f}}
+td{{padding:8px 10px}}
+.city{{font-weight:600;color:#fff}}
+.hor{{font-size:.62rem;padding:2px 5px;border-radius:3px;background:#1a1d24;color:var(--muted)}}
+.pill{{display:inline-block;padding:2px 8px;border-radius:4px;font-weight:700;font-size:.7rem;min-width:58px;text-align:center}}
+.pill-pos{{background:#0d2b1e;color:var(--gain);border:1px solid #1a4030}}
+.pill-neg{{background:#2b0d14;color:var(--loss);border:1px solid #4a1525}}
+.pill-flat{{background:#1a1d24;color:var(--muted);border:1px solid var(--border)}}
+.pill-win{{background:#0d2b1e;color:var(--gain);border:1px solid #1a4030}}
+.pill-loss{{background:#2b0d14;color:var(--loss);border:1px solid #4a1525}}
+.pill-exp{{background:#2a1f0a;color:var(--warn);border:1px solid #4a3010}}
+.bar-wrap{{display:flex;align-items:center;gap:6px}}
+.bar-track{{width:60px;height:4px;background:var(--border);border-radius:2px;position:relative}}
+.bar-fill{{height:100%;border-radius:2px;position:absolute;top:0;left:0}}
+.bar-pos{{background:var(--gain)}}.bar-neg{{background:var(--loss)}}
+.stop{{color:var(--loss);font-size:.7rem}}.muted{{color:var(--muted)}}
+footer{{margin-top:28px;font-size:.63rem;color:var(--muted);border-top:1px solid var(--border);padding-top:10px}}
+</style></head><body>
+"""
+
+_HTML_NAV = """<div class="nav">
+  <a href="index.html" class="{cls_open}">📂 Abiertas ({n_open})</a>
+  <a href="closed.html" class="{cls_closed}">✅ Cerradas ({n_closed})</a>
+</div>
+"""
+
+_HTML_FOOT = """<footer>
+  Overshoot Bot v1 &middot; Modo SIM &middot; stake ${stake}/pos &middot; stop loss 20% &middot;
+  Actualizado: {ts}
+</footer></body></html>"""
+
+
+def _pct_pill(delta: float) -> str:
+    sign = "+" if delta > 0.05 else ""
+    cls  = "pill-pos" if delta > 0.05 else ("pill-neg" if delta < -0.05 else "pill-flat")
+    return f'<span class="pill {cls}">{sign}{delta:.1f}%</span>'
+
+def _bar(delta: float) -> str:
+    pct = min(abs(delta) / 15 * 100, 100)
+    cls = "bar-pos" if delta >= 0 else "bar-neg"
+    return (f'<div class="bar-wrap"><div class="bar-track">'
+            f'<div class="bar-fill {cls}" style="width:{pct:.0f}%"></div>'
+            f'</div></div>')
+
+def _outcome_pill(outcome: str) -> str:
+    m = {"WIN": ("pill-win","✅ WIN"), "LOSS": ("pill-loss","❌ LOSS"),
+         "EXPIRED": ("pill-exp","⏱ EXPIRED")}
+    cls, label = m.get(outcome, ("pill-flat", outcome))
+    return f'<span class="pill {cls}">{label}</span>'
+
+def _group_by_date(rows: list, date_key: str, sort_key, reverse_sort=True) -> dict:
+    groups: dict = {}
+    for r in rows:
+        groups.setdefault(r.get(date_key, "?"), []).append(r)
+    for d in groups:
+        groups[d].sort(key=sort_key, reverse=reverse_sort)
+    return groups
+
+
+def _build_open_page(open_positions: list, n_closed: int, ts: str) -> str:
+    for p in open_positions:
+        entry = p.get("no_ask_entry") or 0
+        now   = p.get("no_price_last") or entry
+        p["_delta"] = ((now - entry) / entry * 100) if entry else 0.0
+
+    groups       = _group_by_date(open_positions, "date_str", lambda r: r["_delta"])
+    dates_sorted = sorted(groups.keys(), reverse=True)
+    gains  = [p for p in open_positions if p["_delta"] > 0.05]
+    losses = [p for p in open_positions if p["_delta"] < -0.05]
+    best   = f"+{max(p['_delta'] for p in gains):.1f}%"   if gains  else "—"
+    worst  = f"{min(p['_delta'] for p in losses):.1f}%"   if losses else "—"
+
+    html  = _HTML_HEAD.format(title="Overshoot Bot — Posiciones Abiertas")
+    html += '<header><h1>⚡ Overshoot Bot</h1>'
+    html += '<p>Posiciones abiertas · Modo SIM · token NO · estrategia overshoot ≥1.5°C</p></header>'
+    html += _HTML_NAV.format(cls_open="active", cls_closed="",
+                              n_open=len(open_positions), n_closed=n_closed)
+    html += '<div class="summary">'
+    html += f'<div class="stat"><div class="stat-label">Abiertas</div><div class="stat-val" style="color:#fff">{len(open_positions)}</div></div>'
+    html += f'<div class="stat"><div class="stat-label">En ganancia</div><div class="stat-val" style="color:var(--gain)">{len(gains)}</div></div>'
+    html += f'<div class="stat"><div class="stat-label">En pérdida</div><div class="stat-val" style="color:var(--loss)">{len(losses)}</div></div>'
+    html += f'<div class="stat"><div class="stat-label">Mejor pos</div><div class="stat-val" style="color:var(--gain)">{best}</div></div>'
+    html += f'<div class="stat"><div class="stat-label">Peor pos</div><div class="stat-val" style="color:var(--loss)">{worst}</div></div>'
+    html += '</div>'
+
+    for date in dates_sorted:
+        rows = groups[date]
+        html += f'<div class="day-group">'
+        html += (f'<div class="day-header"><span class="day-label">{date}</span>'
+                 f'<span class="day-count">{len(rows)} pos</span>'
+                 f'<div class="day-line"></div></div>')
+        html += ('<table><thead><tr>'
+                 '<th>Ciudad</th><th>Hor.</th>'
+                 '<th class="r">Entrada</th><th class="r">Actual</th>'
+                 '<th class="r">Stop</th><th class="r">Var %</th><th>Movim.</th>'
+                 '<th class="r">Overshoot</th><th class="r">ROE/d</th><th class="r">Horas</th>'
+                 '</tr></thead><tbody>')
+        for p in rows:
+            entry   = p.get("no_ask_entry", 0)
+            now     = p.get("no_price_last") or entry
+            stop    = p.get("stop_price", 0)
+            delta   = p["_delta"]
+            elapsed = ""
+            if p.get("ts_entry"):
+                try:
+                    elapsed_h = (datetime.now() - datetime.fromisoformat(p["ts_entry"])).total_seconds() / 3600
+                    elapsed = f"{elapsed_h:.1f}h"
+                except Exception:
+                    pass
+            roe    = p.get("roe_per_day", "")
+            roe_s  = f"{roe:.1f}%" if isinstance(roe, (int, float)) else "—"
+            over   = p.get("overshoot", "")
+            over_s = f"{over:.2f}°{p.get('unit','')}" if isinstance(over, (int, float)) else "—"
+            html += (f'<tr>'
+                     f'<td class="city">{p["city"]}</td>'
+                     f'<td><span class="hor">T+{p.get("days_ahead","?")}</span></td>'
+                     f'<td class="r">{entry:.4f}</td>'
+                     f'<td class="r">{now:.4f}</td>'
+                     f'<td class="r stop">{stop:.4f}</td>'
+                     f'<td class="r">{_pct_pill(delta)}</td>'
+                     f'<td>{_bar(delta)}</td>'
+                     f'<td class="r muted">{over_s}</td>'
+                     f'<td class="r muted">{roe_s}</td>'
+                     f'<td class="r muted">{elapsed}</td>'
+                     f'</tr>')
+        html += '</tbody></table></div>'
+
+    html += _HTML_FOOT.format(stake=SIM_STAKE, ts=ts)
+    return html
+
+
+def _build_closed_page(closed_positions: list, n_open: int, ts: str) -> str:
+    for p in closed_positions:
+        p["_close_date"] = (p.get("ts_close") or "")[:10] or "?"
+
+    groups       = _group_by_date(closed_positions, "_close_date",
+                                   lambda r: r.get("sim_pnl_pct") or 0)
+    dates_sorted = sorted(groups.keys(), reverse=True)
+    wins      = [p for p in closed_positions if p.get("outcome") == "WIN"]
+    losses    = [p for p in closed_positions if p.get("outcome") == "LOSS"]
+    exps      = [p for p in closed_positions if p.get("outcome") == "EXPIRED"]
+    total_pnl = sum(p.get("sim_pnl") or 0 for p in closed_positions)
+    wr        = len(wins) / (len(wins) + len(losses)) * 100 if (wins or losses) else 0
+    pnl_col   = "var(--gain)" if total_pnl >= 0 else "var(--loss)"
+
+    html  = _HTML_HEAD.format(title="Overshoot Bot — Posiciones Cerradas")
+    html += '<header><h1>⚡ Overshoot Bot</h1>'
+    html += '<p>Historial de posiciones cerradas · Modo SIM</p></header>'
+    html += _HTML_NAV.format(cls_open="", cls_closed="active",
+                              n_open=n_open, n_closed=len(closed_positions))
+    html += '<div class="summary">'
+    html += f'<div class="stat"><div class="stat-label">Cerradas</div><div class="stat-val" style="color:#fff">{len(closed_positions)}</div></div>'
+    html += f'<div class="stat"><div class="stat-label">WIN</div><div class="stat-val" style="color:var(--gain)">{len(wins)}</div></div>'
+    html += f'<div class="stat"><div class="stat-label">LOSS</div><div class="stat-val" style="color:var(--loss)">{len(losses)}</div></div>'
+    html += f'<div class="stat"><div class="stat-label">Win rate</div><div class="stat-val" style="color:#fff">{wr:.0f}%</div></div>'
+    html += f'<div class="stat"><div class="stat-label">P&amp;L total</div><div class="stat-val" style="color:{pnl_col}">${total_pnl:+.2f}</div></div>'
+    if exps:
+        html += f'<div class="stat"><div class="stat-label">Expired</div><div class="stat-val" style="color:var(--warn)">{len(exps)}</div></div>'
+    html += '</div>'
+
+    if not closed_positions:
+        html += '<p style="color:var(--muted);font-size:.8rem;margin-top:20px">Todavía no hay posiciones cerradas.</p>'
+    else:
+        for date in dates_sorted:
+            rows = groups[date]
+            html += f'<div class="day-group">'
+            html += (f'<div class="day-header"><span class="day-label">Cierre: {date}</span>'
+                     f'<span class="day-count">{len(rows)} pos</span>'
+                     f'<div class="day-line"></div></div>')
+            html += ('<table><thead><tr>'
+                     '<th>Ciudad</th><th>Hor.</th><th>Resultado</th><th>Razón</th>'
+                     '<th class="r">Entrada</th><th class="r">Cierre</th>'
+                     '<th class="r">P&amp;L $</th><th class="r">P&amp;L %</th>'
+                     '<th class="r">Overshoot</th><th class="r">Evento</th>'
+                     '</tr></thead><tbody>')
+            for p in rows:
+                pnl     = p.get("sim_pnl") or 0
+                pnl_pct = p.get("sim_pnl_pct") or 0
+                gc      = "var(--gain)" if pnl >= 0 else "var(--loss)"
+                gpc     = "var(--gain)" if pnl_pct >= 0 else "var(--loss)"
+                over    = p.get("overshoot", "")
+                over_s  = f"{over:.2f}°{p.get('unit','')}" if isinstance(over, (int, float)) else "—"
+                html += (f'<tr>'
+                         f'<td class="city">{p["city"]}</td>'
+                         f'<td><span class="hor">T+{p.get("days_ahead","?")}</span></td>'
+                         f'<td>{_outcome_pill(p.get("outcome","?"))}</td>'
+                         f'<td class="muted" style="font-size:.68rem">{p.get("close_reason","—")}</td>'
+                         f'<td class="r">{(p.get("no_ask_entry") or 0):.4f}</td>'
+                         f'<td class="r">{(p.get("no_price_close") or 0):.4f}</td>'
+                         f'<td class="r"><span style="color:{gc}">${pnl:+.3f}</span></td>'
+                         f'<td class="r"><span style="color:{gpc}">{pnl_pct:+.1f}%</span></td>'
+                         f'<td class="r muted">{over_s}</td>'
+                         f'<td class="r muted">{p.get("date_str","—")}</td>'
+                         f'</tr>')
+            html += '</tbody></table></div>'
+
+    html += _HTML_FOOT.format(stake=SIM_STAKE, ts=ts)
+    return html
+
+
+def generate_html_dashboard(db: "OvershootDB"):
+    """
+    Genera index.html (posiciones abiertas) y closed.html (posiciones cerradas).
+    Llamado automáticamente en run() paso [3/3].
+    """
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+
+    open_pos = db.get_open_positions()
+
+    with db._conn() as conn:
+        cur         = conn.execute("SELECT * FROM positions WHERE outcome != 'OPEN' ORDER BY ts_close DESC")
+        cols        = [d[0] for d in cur.description]
+        closed_rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    with open(DASHBOARD_OPEN_HTML, "w", encoding="utf-8") as f:
+        f.write(_build_open_page(open_pos, len(closed_rows), ts))
+    with open(DASHBOARD_CLOSED_HTML, "w", encoding="utf-8") as f:
+        f.write(_build_closed_page(closed_rows, len(open_pos), ts))
+
+    log.info(f"  🌐 Dashboard HTML generado: {DASHBOARD_OPEN_HTML} / {DASHBOARD_CLOSED_HTML}")
+
 # ── Motor principal ───────────────────────────────────────────────────────────
 class OvershootBot:
     def __init__(self):
@@ -862,10 +1119,11 @@ class OvershootBot:
         for city in CITIES:
             self._scan_city(city, stats)
 
-        # ── 3. Exportar CSVs ──
-        log.info("── [3/3] Exportando CSVs ──")
+        # ── 3. Exportar CSVs + Dashboard HTML ──
+        log.info("── [3/3] Exportando CSVs y dashboard HTML ──")
         export_open_positions_csv(self.db)
         export_closed_csv(self.db)
+        generate_html_dashboard(self.db)
 
         self.db.log_scan(
             stats["cities_ok"], stats["candidates"],
