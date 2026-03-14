@@ -1,3 +1,4 @@
+```yaml
 name: Overshoot Bot — cada 3 horas
 
 on:
@@ -62,8 +63,9 @@ jobs:
         run: |
           git config --global user.email "bot@pwbot-overshoot"
           git config --global user.name "Overshoot Bot"
-          git add pwbot_overshoot_positions.csv pwbot_overshoot_closed.csv index.html closed.html || true
+          git add pwbot_overshoot_positions.csv pwbot_overshoot_closed.csv index.html closed.html sandbox.html || true
           git diff --staged --quiet || git commit -m "📊 Auto-update positions + dashboard [run #${{ github.run_number }}]"
           git push || echo "Nada que pushear"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
