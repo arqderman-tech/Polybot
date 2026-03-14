@@ -52,7 +52,7 @@ OVERSHOOT_MIN_F = 2.7   # °F equivalente (1.5°C × 9/5 = 2.7°F)
 NO_MAX_PRICE    = 0.995 # precio máximo del token NO (ask real CLOB) para entrar
                         # NO_ask <= 0.995 significa que el mercado cotiza el NO casi a par
 SIM_STAKE       = 5.0   # dólares simulados por posición
-STOP_MULTIPLIER = 0.80  # si no_price baja a 80% del entry → stop loss
+STOP_MULTIPLIER = 0.85  # si no_price baja a 85% del entry → stop loss
 
 # ── Resolución automática al vencer ──────────────────────────────────────────
 # False = solo loguear que expiró, no determinar WIN/LOSS todavía.
