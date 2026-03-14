@@ -12,6 +12,8 @@ jobs:
     steps:
       - name: Checkout repositorio
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Restaurar DB y CSVs previos
         uses: actions/cache@v4
@@ -35,6 +37,53 @@ jobs:
       - name: Migrar posiciones sandbox en DB
         run: python3 migrate_sandbox.py
 
+      - name: Correr bot
+        run: python pwbot_overshoot.py
+
+      - name: Subir log como artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: overshoot-log-${{ github.run_number }}
+          path: pwbot_overshoot.log
+          retention-days: 30
+
+      - name: Subir posiciones como artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: positions-${{ github.run_number }}
+          path: |
+            pwbot_overshoot_positions.csv
+            pwbot_overshoot_closed.csv
+          retention-days: 90
+
+      - name: Publicar HTML a gh-pages
+        run: |
+          git config --global user.email "bot@pwbot-overshoot"
+          git config --global user.name "Overshoot Bot"
+          cp index.html /tmp/index.html
+          cp closed.html /tmp/closed.html
+          cp sandbox.html /tmp/sandbox.html
+          git fetch origin gh-pages 2>/dev/null || true
+          git checkout gh-pages 2>/dev/null || git checkout --orphan gh-pages
+          cp /tmp/index.html index.html
+          cp /tmp/closed.html closed.html
+          cp /tmp/sandbox.html sandbox.html
+          git add index.html closed.html sandbox.html
+          git diff --staged --quiet || git commit -m "📊 Dashboard update [run #${{ github.run_number }}]"
+          git push origin gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Guardar CSVs en main
+        run: |
+          git checkout main
+          git add -f pwbot_overshoot_positions.csv pwbot_overshoot_closed.csv || true
+          git diff --staged --quiet || git commit -m "📦 Data update [run #${{ github.run_number }}]"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Correr bot
         run: python pwbot_overshoot.py
 
