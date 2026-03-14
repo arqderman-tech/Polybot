@@ -1,4 +1,4 @@
-```yaml
+yaml
 name: Overshoot Bot - cada 3 horas
 
 on:
@@ -68,4 +68,3 @@ jobs:
           git push || echo "Nada que pushear"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-```
