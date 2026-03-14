@@ -1,6 +1,7 @@
+```yaml
 name: Overshoot Bot - cada 3 horas
 
-on:
+"on":
   schedule:
     # Corre a las 0, 3, 6, 9, 12, 15, 18, 21 UTC
     - cron: '0 0,3,6,9,12,15,18,21 * * *'
@@ -34,6 +35,19 @@ jobs:
       - name: Instalar dependencias
         run: pip install requests
 
+      - name: Migrar posiciones sandbox en DB
+        run: |
+          python3 -c "
+import sqlite3, os
+db = 'pwbot_overshoot.db'
+if os.path.exists(db):
+    with sqlite3.connect(db) as conn:
+        conn.execute(\"UPDATE positions SET is_sandbox=1 WHERE city IN ('Tel Aviv','Sao Paulo') AND (is_sandbox IS NULL OR is_sandbox=0)\")
+        print('Migracion sandbox OK')
+else:
+    print('DB no existe aun')
+"
+
       - name: Correr bot
         run: python pwbot_overshoot.py
 
@@ -62,8 +76,9 @@ jobs:
         run: |
           git config --global user.email "bot@pwbot-overshoot"
           git config --global user.name "Overshoot Bot"
-          git add pwbot_overshoot_positions.csv pwbot_overshoot_closed.csv index.html closed.html || true
+          git add -f pwbot_overshoot_positions.csv pwbot_overshoot_closed.csv index.html closed.html sandbox.html || true
           git diff --staged --quiet || git commit -m "📊 Auto-update positions + dashboard [run #${{ github.run_number }}]"
           git push || echo "Nada que pushear"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
