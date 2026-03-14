@@ -1,5 +1,5 @@
 ```yaml
-name: Overshoot Bot — cada 3 horas
+name: Overshoot Bot - cada 3 horas
 
 on:
   schedule:
