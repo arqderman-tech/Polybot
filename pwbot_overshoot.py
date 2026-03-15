@@ -49,6 +49,8 @@ DASHBOARD_SANDBOX_HTML = "sandbox.html"
 OVERSHOOT_MIN_C = 1.5   # °C mínimo de overshoot para ciudades en Celsius
 OVERSHOOT_MIN_F = 2.7   # °F equivalente (1.5°C × 9/5 = 2.7°F)
 # Sin techo en ninguna escala: más overshoot = más seguro
+NO_MIN_PRICE    = 0.600 # precio mínimo del token NO (ask real CLOB) para entrar
+                        # NO_ask < 0.600 → mercado ya descuenta alto riesgo, no entrar
 NO_MAX_PRICE    = 0.995 # precio máximo del token NO (ask real CLOB) para entrar
                         # NO_ask <= 0.995 significa que el mercado cotiza el NO casi a par
 SIM_STAKE       = 5.0   # dólares simulados por posición
@@ -1526,7 +1528,16 @@ class OvershootBot:
                 log.info(f"    ↳ T+{d} threshold={threshold}°{fc['unit']}  mb_max={max_model}°  overshoot={overshoot:+.2f}°  — sin precio CLOB")
                 continue
 
-            # ¿El ask real del token NO es ≤ 0.995?
+            # ¿El ask real del token NO está en rango [NO_MIN_PRICE, NO_MAX_PRICE]?
+            # Precio muy bajo → mercado descuenta riesgo real, no entrar.
+            if no_ask < NO_MIN_PRICE:
+                log.info(
+                    f"    ↳ T+{d} threshold={threshold}°{fc['unit']}  mb_max={max_model}°  "
+                    f"overshoot={overshoot:+.2f}°  no_ask={no_ask:.4f} < {NO_MIN_PRICE}  — precio muy bajo (riesgo), skip"
+                )
+                continue
+
+            # Precio muy alto → spread/liquidez mala
             if no_ask > NO_MAX_PRICE:
                 log.info(
                     f"    ↳ T+{d} threshold={threshold}°{fc['unit']}  mb_max={max_model}°  "
@@ -1694,7 +1705,7 @@ def main():
     print(f"  Closed CSV:    {os.path.abspath(CLOSED_CSV)}")
     print(f"  Modo:          SIM (sin órdenes reales)")
     print(f"  Overshoot:     ≥ {OVERSHOOT_MIN_C}°C  /  ≥ {OVERSHOOT_MIN_F}°F  (sin techo, más es mejor)")
-    print(f"  NO_MAX_PRICE:  ask CLOB ≤ {NO_MAX_PRICE} (precio real de venta)")
+    print(f"  NO_PRICE:      ask CLOB ∈ [{NO_MIN_PRICE}, {NO_MAX_PRICE}]")
     print(f"  Stop loss:     {(1-STOP_MULTIPLIER)*100:.0f}% del precio de entrada")
     print(f"  Stake sim:     ${SIM_STAKE} por posición")
     print("═" * 65 + "\n")
