@@ -71,14 +71,9 @@ jobs:
           cp index.html /tmp/index.html
           cp closed.html /tmp/closed.html
           cp sandbox.html /tmp/sandbox.html
-          git fetch origin gh-pages 2>/dev/null || true
-          # Si la rama existe remotamente, usarla; si no, crear orphan limpia
-          if git ls-remote --exit-code origin gh-pages; then
-            git checkout gh-pages
-          else
-            git checkout --orphan gh-pages
-            git rm -rf . --quiet
-          fi
+          git fetch origin gh-pages
+          git stash
+          git checkout gh-pages
           cp /tmp/index.html index.html
           cp /tmp/closed.html closed.html
           cp /tmp/sandbox.html sandbox.html
@@ -91,6 +86,7 @@ jobs:
       - name: Guardar CSVs en main
         run: |
           git checkout main
+          git stash pop || true
           git add -f pwbot_overshoot_positions.csv pwbot_overshoot_closed.csv || true
           git diff --staged --quiet || git commit -m "📦 Data update [run #${{ github.run_number }}]"
           git push origin main
