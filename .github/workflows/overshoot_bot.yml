@@ -4,6 +4,12 @@ name: Overshoot Bot - cada 3 horas
   schedule:
     - cron: '0 0,3,6,9,12,15,18,21 * * *'
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'pwbot_overshoot.py'
+      - 'migrate_sandbox.py'
 
 jobs:
   run-bot:
@@ -66,7 +72,13 @@ jobs:
           cp closed.html /tmp/closed.html
           cp sandbox.html /tmp/sandbox.html
           git fetch origin gh-pages 2>/dev/null || true
-          git checkout gh-pages 2>/dev/null || git checkout --orphan gh-pages
+          # Si la rama existe remotamente, usarla; si no, crear orphan limpia
+          if git ls-remote --exit-code origin gh-pages; then
+            git checkout gh-pages
+          else
+            git checkout --orphan gh-pages
+            git rm -rf . --quiet
+          fi
           cp /tmp/index.html index.html
           cp /tmp/closed.html closed.html
           cp /tmp/sandbox.html sandbox.html
@@ -82,35 +94,5 @@ jobs:
           git add -f pwbot_overshoot_positions.csv pwbot_overshoot_closed.csv || true
           git diff --staged --quiet || git commit -m "📦 Data update [run #${{ github.run_number }}]"
           git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Correr bot
-        run: python pwbot_overshoot.py
-
-      - name: Subir log como artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: overshoot-log-${{ github.run_number }}
-          path: pwbot_overshoot.log
-          retention-days: 30
-
-      - name: Subir posiciones abiertas como artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: positions-${{ github.run_number }}
-          path: |
-            pwbot_overshoot_positions.csv
-            pwbot_overshoot_closed.csv
-          retention-days: 90
-
-      - name: Commitear CSVs al repositorio
-        run: |
-          git config --global user.email "bot@pwbot-overshoot"
-          git config --global user.name "Overshoot Bot"
-          git add -f pwbot_overshoot_positions.csv pwbot_overshoot_closed.csv index.html closed.html sandbox.html || true
-          git diff --staged --quiet || git commit -m "📊 Auto-update positions + dashboard [run #${{ github.run_number }}]"
-          git push || echo "Nada que pushear"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
