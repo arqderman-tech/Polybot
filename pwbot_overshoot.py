@@ -32,6 +32,7 @@ import sys, os, re, json, time, logging, sqlite3, csv, statistics
 from datetime import datetime, timedelta
 from typing import Optional, List
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests as req
 
@@ -66,6 +67,9 @@ MIN_DAYS = 1  # T+1
 MAX_DAYS = 2  # T+2, nunca T+0 ni T+3+
 
 FETCH_TIMEOUT = 12
+
+# Ciudades escaneadas en paralelo (Meteoblue tolera 4-5 concurrentes)
+MAX_CITY_WORKERS = 4
 
 BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -230,16 +234,17 @@ class RateLimiter:
 
 _rate_gamma = RateLimiter(1.2)
 _rate_clob  = RateLimiter(0.5)
-_rate_mb    = RateLimiter(3.0)
+_rate_mb    = RateLimiter(2.0)   # reducido de 3.0 → 2.0s
 
 # ── Base de datos ─────────────────────────────────────────────────────────────
 class OvershootDB:
     def __init__(self, path=DB_PATH):
         self.path = path
+        self._write_lock = threading.Lock()  # serializar escrituras concurrentes
         self._init()
 
     def _conn(self):
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=30)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -335,13 +340,14 @@ class OvershootDB:
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
     def save_position(self, p: dict) -> int:
-        with self._conn() as conn:
-            cols = ", ".join(p.keys())
-            ph   = ", ".join(["?"] * len(p))
-            cur  = conn.execute(
-                f"INSERT INTO positions ({cols}) VALUES ({ph})", list(p.values())
-            )
-            return cur.lastrowid
+        with self._write_lock:
+            with self._conn() as conn:
+                cols = ", ".join(p.keys())
+                ph   = ", ".join(["?"] * len(p))
+                cur  = conn.execute(
+                    f"INSERT INTO positions ({cols}) VALUES ({ph})", list(p.values())
+                )
+                return cur.lastrowid
 
     def already_open(self, market_id: str) -> bool:
         """¿Ya tenemos una posición abierta en este mercado?"""
@@ -360,29 +366,32 @@ class OvershootDB:
             return [dict(r) for r in cur.fetchall()]
 
     def save_tick(self, pos_id: int, no_bid, no_ask, yes_bid, elapsed_h):
-        with self._conn() as conn:
-            conn.execute(
-                "INSERT INTO price_ticks (pos_id,ts,no_bid,no_ask,yes_bid,elapsed_h) "
-                "VALUES (?,?,?,?,?,?)",
-                (pos_id, datetime.now().isoformat(), no_bid, no_ask, yes_bid, round(elapsed_h, 2))
-            )
+        with self._write_lock:
+            with self._conn() as conn:
+                conn.execute(
+                    "INSERT INTO price_ticks (pos_id,ts,no_bid,no_ask,yes_bid,elapsed_h) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (pos_id, datetime.now().isoformat(), no_bid, no_ask, yes_bid, round(elapsed_h, 2))
+                )
 
     def update_tracking(self, pos_id: int, no_price, no_price_max, no_price_min, ticks):
-        with self._conn() as conn:
-            conn.execute("""
-                UPDATE positions
-                SET no_price_last=?, no_price_max=?, no_price_min=?,
-                    ticks_tracked=?, last_update=?
-                WHERE id=?""",
-                (no_price, no_price_max, no_price_min, ticks,
-                 datetime.now().isoformat(), pos_id)
-            )
+        with self._write_lock:
+            with self._conn() as conn:
+                conn.execute("""
+                    UPDATE positions
+                    SET no_price_last=?, no_price_max=?, no_price_min=?,
+                        ticks_tracked=?, last_update=?
+                    WHERE id=?""",
+                    (no_price, no_price_max, no_price_min, ticks,
+                     datetime.now().isoformat(), pos_id)
+                )
 
     def close_position(self, pos_id: int, outcome: str, reason: str,
                         no_price_close: float, sim_pnl: float, sim_pnl_pct: float):
-        with self._conn() as conn:
-            conn.execute("""
-                UPDATE positions
+        with self._write_lock:
+            with self._conn() as conn:
+                conn.execute("""
+                    UPDATE positions
                 SET outcome=?, close_reason=?, ts_close=?,
                     no_price_close=?, sim_pnl=?, sim_pnl_pct=?
                 WHERE id=?""",
@@ -391,8 +400,9 @@ class OvershootDB:
             )
 
     def log_scan(self, cities_ok, candidates, entered, tracked, stopped, notes=""):
-        with self._conn() as conn:
-            conn.execute(
+        with self._write_lock:
+            with self._conn() as conn:
+                conn.execute(
                 "INSERT INTO scan_log (ts,cities_ok,candidates,entered,tracked,stopped,notes) "
                 "VALUES (?,?,?,?,?,?,?)",
                 (datetime.now().isoformat(), cities_ok, candidates, entered, tracked, stopped, notes)
@@ -503,10 +513,16 @@ def fetch_actual_temp(city: str, date_str: str) -> Optional[float]:
     return None
 
 
+MB_PAGE_TIMEOUT = 25   # timeout para la página HTML de Meteoblue
+MB_API_TIMEOUT  = 20   # timeout para la API JSON de Meteoblue
+MB_RETRIES      = 2    # reintentos ante timeout
+MB_RETRY_WAIT   = 4.0  # segundos entre reintentos
+
 def fetch_meteoblue(city: str, target_date) -> Optional[dict]:
     """
     Descarga el multimodel de Meteoblue para city/fecha.
     Retorna: {max_model, consensus, std_dev, n_models, models{}, unit}
+    Incluye reintentos automáticos ante timeouts.
     """
     cfg    = CITIES[city]
     mb_url = cfg.get("mb_url")
@@ -514,16 +530,24 @@ def fetch_meteoblue(city: str, target_date) -> Optional[dict]:
     if not mb_url:
         return None
 
-    _rate_mb.wait()
     session = req.Session()
     session.headers.update({"User-Agent": BROWSER_UA, "Accept-Language": "en-US,en;q=0.9"})
 
-    try:
-        r = session.get(mb_url, timeout=FETCH_TIMEOUT)
-        r.raise_for_status()
-    except Exception as e:
-        log.warning(f"MB page {city}: {e}")
-        return None
+    # Paso 1: página HTML (con reintentos)
+    r = None
+    for attempt in range(1 + MB_RETRIES):
+        _rate_mb.wait()
+        try:
+            r = session.get(mb_url, timeout=MB_PAGE_TIMEOUT)
+            r.raise_for_status()
+            break
+        except Exception as e:
+            if attempt < MB_RETRIES:
+                log.debug(f"MB page {city} intento {attempt+1}/{1+MB_RETRIES}: {e} — reintentando en {MB_RETRY_WAIT}s")
+                time.sleep(MB_RETRY_WAIT)
+            else:
+                log.warning(f"MB page {city}: {e}")
+                return None
 
     pattern = r"my\.meteoblue\.com/images/meteogram_multimodel\?([^\"'<>\s]+format=highcharts[^\"'<>\s]+)"
     matches = re.findall(pattern, r.text)
@@ -539,15 +563,23 @@ def fetch_meteoblue(city: str, target_date) -> Optional[dict]:
     if raw_qs is None:
         raw_qs = matches[0].replace("&amp;", "&")
 
+    # Paso 2: API JSON (con reintentos)
     api_url = f"https://my.meteoblue.com/images/meteogram_multimodel?{raw_qs}"
-    _rate_mb.wait()
-    try:
-        r2 = session.get(api_url, headers={"Referer": mb_url}, timeout=FETCH_TIMEOUT)
-        r2.raise_for_status()
-        data = r2.json()
-    except Exception as e:
-        log.warning(f"MB API {city}: {e}")
-        return None
+    data = None
+    for attempt in range(1 + MB_RETRIES):
+        _rate_mb.wait()
+        try:
+            r2 = session.get(api_url, headers={"Referer": mb_url}, timeout=MB_API_TIMEOUT)
+            r2.raise_for_status()
+            data = r2.json()
+            break
+        except Exception as e:
+            if attempt < MB_RETRIES:
+                log.debug(f"MB API {city} intento {attempt+1}/{1+MB_RETRIES}: {e} — reintentando en {MB_RETRY_WAIT}s")
+                time.sleep(MB_RETRY_WAIT)
+            else:
+                log.warning(f"MB API {city}: {e}")
+                return None
 
     if data.get("error"):
         return None
@@ -594,6 +626,33 @@ def fetch_meteoblue(city: str, target_date) -> Optional[dict]:
         "models":    model_max,
         "unit":      unit,
     }
+
+
+def fetch_forecasts_for_city(city: str) -> dict:
+    """
+    Descarga pronósticos T+1 y T+2 de Meteoblue en paralelo.
+    Retorna {days_ahead: forecast_dict}.
+    """
+    results = {}
+
+    def _fetch(d):
+        target = datetime.now().date() + timedelta(days=d)
+        return d, fetch_meteoblue(city, target)
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        futures = [ex.submit(_fetch, d) for d in range(MIN_DAYS, MAX_DAYS + 1)]
+        for f in as_completed(futures):
+            d, fc = f.result()
+            if fc:
+                log.info(
+                    f"    MB {city} T+{d}: max_model={fc['max_model']}°{fc['unit']}  "
+                    f"consensus={fc['consensus']}°  n={fc['n_models']}"
+                )
+                results[d] = fc
+            else:
+                log.warning(f"    MB {city} T+{d}: sin datos")
+
+    return results
 
 # ── Helpers Polymarket ────────────────────────────────────────────────────────
 def parse_market_threshold(question: str) -> Optional[dict]:
@@ -1297,6 +1356,7 @@ def generate_html_dashboard(db: "OvershootDB"):
 class OvershootBot:
     def __init__(self):
         self.db = OvershootDB()
+        self._stats_lock = threading.Lock()
 
     def run(self):
         """
@@ -1309,17 +1369,29 @@ class OvershootBot:
 
         stats = {"cities_ok": 0, "candidates": 0, "entered": 0, "tracked": 0, "stopped": 0}
 
-        # ── 1. Trackear posiciones abiertas primero ──
+        # ── 1. Trackear posiciones abiertas (en paralelo) ──
         log.info("── [1/3] Trackeando posiciones abiertas ──")
         open_positions = self.db.get_open_positions()
         log.info(f"  {len(open_positions)} posiciones abiertas")
-        for pos in open_positions:
-            self._track_position(pos, stats)
+        if open_positions:
+            with ThreadPoolExecutor(max_workers=min(len(open_positions), 4)) as ex:
+                futures = {ex.submit(self._track_position, pos, stats): pos for pos in open_positions}
+                for f in as_completed(futures):
+                    try:
+                        f.result()
+                    except Exception as e:
+                        log.error(f"Track error: {e}")
 
-        # ── 2. Escanear nuevas oportunidades ──
+        # ── 2. Escanear ciudades (en paralelo) ──
         log.info("── [2/3] Escaneando ciudades ──")
-        for city in CITIES:
-            self._scan_city(city, stats)
+        with ThreadPoolExecutor(max_workers=MAX_CITY_WORKERS) as ex:
+            futures = {ex.submit(self._scan_city, city, stats): city for city in CITIES}
+            for f in as_completed(futures):
+                city_name = futures[f]
+                try:
+                    f.result()
+                except Exception as e:
+                    log.error(f"Scan error {city_name}: {e}")
 
         # ── 3. Exportar CSVs + Dashboard HTML ──
         log.info("── [3/3] Exportando CSVs y dashboard HTML ──")
@@ -1387,7 +1459,8 @@ class OvershootBot:
 
         self.db.save_tick(pos_id, no_bid, no_ask, yes_bid, elapsed_h)
         self.db.update_tracking(pos_id, no_price_now, no_max, no_min, (pos.get("ticks_tracked") or 0) + 1)
-        stats["tracked"] += 1
+        with self._stats_lock:
+            stats["tracked"] += 1
 
         log.info(
             f"  📍 #{pos_id} {city} T+{days_ahead} {date_str}  "
@@ -1402,7 +1475,8 @@ class OvershootBot:
             pnl       = val_close - sim_stake
             pnl_pct   = pnl / sim_stake * 100
             self.db.close_position(pos_id, "LOSS", "STOP", no_price_now, pnl, pnl_pct)
-            stats["stopped"] += 1
+            with self._stats_lock:
+                stats["stopped"] += 1
             log.info(
                 f"  🛑 STOP #{pos_id} {city}  "
                 f"no_price={no_price_now:.4f} ≤ stop={stop_price:.4f}  "
@@ -1469,25 +1543,15 @@ class OvershootBot:
         sandbox_tag = " [SANDBOX]" if is_sandbox else ""
         log.info(f"  🌐 {city}{sandbox_tag} — escaneando...")
 
-        # Obtener pronóstico Meteoblue para T+1 y T+2
-        forecasts = {}
-        for d in range(MIN_DAYS, MAX_DAYS + 1):
-            target = datetime.now().date() + timedelta(days=d)
-            fc = fetch_meteoblue(city, target)
-            if fc:
-                forecasts[d] = fc
-                log.info(
-                    f"    MB {city} T+{d}: max_model={fc['max_model']}°{fc['unit']}  "
-                    f"consensus={fc['consensus']}°  n={fc['n_models']}"
-                )
-            else:
-                log.warning(f"    MB {city} T+{d}: sin datos")
+        # Pronóstico Meteoblue T+1 y T+2 en paralelo
+        forecasts = fetch_forecasts_for_city(city)
 
         if not forecasts:
             log.warning(f"  {city}: sin pronóstico Meteoblue, saltando")
             return
 
-        stats["cities_ok"] += 1
+        with self._stats_lock:
+            stats["cities_ok"] += 1
 
         # Obtener mercados de Polymarket
         markets = fetch_markets_for_city(city)
@@ -1574,7 +1638,8 @@ class OvershootBot:
                 "score":        score,
             })
 
-            stats["candidates"] += 1
+            with self._stats_lock:
+                stats["candidates"] += 1
             log.info(
                 f"    ✨ CANDIDATO: {city} T+{d} threshold={threshold}°  "
                 f"overshoot={overshoot:.2f}°  no_ask={no_ask:.4f}  "
@@ -1644,7 +1709,8 @@ class OvershootBot:
         }
 
         pos_id = self.db.save_position(pos)
-        stats["entered"] += 1
+        with self._stats_lock:
+            stats["entered"] += 1
 
         log.info(
             f"  💰 [SIM] ENTRADA #{pos_id}: {candidate['city']} T+{candidate['days_ahead']}  "
@@ -1709,6 +1775,7 @@ def main():
     print(f"  NO_PRICE:      ask CLOB ∈ [{NO_MIN_PRICE}, {NO_MAX_PRICE}]")
     print(f"  Stop loss:     {(1-STOP_MULTIPLIER)*100:.0f}% del precio de entrada")
     print(f"  Stake sim:     ${SIM_STAKE} por posición")
+    print(f"  Workers:       {MAX_CITY_WORKERS} ciudades en paralelo")
     print("═" * 65 + "\n")
 
     bot = OvershootBot()
