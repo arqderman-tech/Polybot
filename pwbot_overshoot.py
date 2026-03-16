@@ -338,6 +338,18 @@ class OvershootDB:
                 conn.execute("ALTER TABLE positions ADD COLUMN is_sandbox INTEGER DEFAULT 0")
                 log.info("  🔧 Migración DB: columna is_sandbox agregada")
 
+            # Migración: corregir is_sandbox para ciudades que ya tienen sandbox=True en config
+            # Cubre posiciones históricas guardadas antes de que existiera el flag
+            sandbox_cities = [c for c, cfg in CITIES.items() if cfg.get("sandbox")]
+            if sandbox_cities:
+                placeholders = ",".join(["?"] * len(sandbox_cities))
+                updated = conn.execute(
+                    f"UPDATE positions SET is_sandbox=1 WHERE city IN ({placeholders}) AND (is_sandbox IS NULL OR is_sandbox=0)",
+                    sandbox_cities
+                ).rowcount
+                if updated:
+                    log.info(f"  🔧 Migración DB: {updated} posiciones marcadas como sandbox ({', '.join(sandbox_cities)})")
+
     # ── CRUD ──────────────────────────────────────────────────────────────────
     def save_position(self, p: dict) -> int:
         with self._write_lock:
