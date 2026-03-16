@@ -17,7 +17,7 @@ jobs:
       - name: Checkout repositorio
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1          # ⚡ era 0 (historial completo) — solo necesitamos el HEAD
 
       - name: Restaurar DB y CSVs previos
         uses: actions/cache@v4
@@ -36,7 +36,12 @@ jobs:
           python-version: '3.11'
 
       - name: Instalar dependencias
-        run: pip install requests
+        uses: actions/cache@v4        # ⚡ cache de pip
+        id: pip-cache
+        with:
+          path: ~/.cache/pip
+          key: pip-requests-${{ runner.os }}
+      - run: pip install requests
 
       - name: Migrar posiciones sandbox en DB
         run: python3 migrate_sandbox.py
@@ -62,39 +67,38 @@ jobs:
             pwbot_overshoot_closed.csv
           retention-days: 90
 
-      - name: Publicar HTML a gh-pages
+      - name: Publicar HTML y guardar CSVs
         run: |
           git config --global user.email "bot@pwbot-overshoot"
           git config --global user.name "Overshoot Bot"
 
-          cp index.html /tmp/index.html
-          cp closed.html /tmp/closed.html
+          # Guardar artefactos temporalmente
+          cp index.html   /tmp/index.html
+          cp closed.html  /tmp/closed.html
           cp sandbox.html /tmp/sandbox.html
+          cp pwbot_overshoot_positions.csv /tmp/positions.csv
+          cp pwbot_overshoot_closed.csv    /tmp/closed.csv
 
+          # ── gh-pages ──
           git fetch origin gh-pages
-          git stash || true
           git checkout gh-pages
 
-          cp /tmp/index.html index.html
-          cp /tmp/closed.html closed.html
+          cp /tmp/index.html   index.html
+          cp /tmp/closed.html  closed.html
           cp /tmp/sandbox.html sandbox.html
 
           git add index.html closed.html sandbox.html
           git diff --staged --quiet || git commit -m "📊 Dashboard update [run #${{ github.run_number }}]"
-
           git pull --rebase origin gh-pages || true
           git push origin gh-pages
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Guardar CSVs en main
-        run: |
+          # ── main ── (⚡ un solo checkout en lugar de dos operaciones git separadas)
           git checkout main
-          git stash pop || true
+          cp /tmp/positions.csv pwbot_overshoot_positions.csv
+          cp /tmp/closed.csv    pwbot_overshoot_closed.csv
 
           git add -f pwbot_overshoot_positions.csv pwbot_overshoot_closed.csv || true
           git diff --staged --quiet || git commit -m "📦 Data update [run #${{ github.run_number }}]"
-
           git pull --rebase origin main || true
           git push origin main
         env:
