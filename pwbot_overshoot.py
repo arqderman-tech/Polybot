@@ -111,6 +111,7 @@ CITIES = {
     "Toronto":      {"slug":"toronto","unit":"C","flag":"CA",
         "lat":43.6532,"lon":-79.3832,"tz":"America/Toronto",
         "mb_url":"https://www.meteoblue.com/en/weather/forecast/multimodel/toronto_canada_6167865"},
+        "sandbox": True},  # perdedor habitual — modo prueba
     "Wellington":   {"slug":"wellington","unit":"C","flag":"NZ",
         "lat":-41.2866,"lon":174.7756,"tz":"Pacific/Auckland",
         "mb_url":"https://www.meteoblue.com/en/weather/forecast/multimodel/wellington_new-zealand_2179537"},
