@@ -35,12 +35,14 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalar dependencias
+      - name: Cache pip
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-requests-${{ runner.os }}
-      - run: pip install requests
+
+      - name: Instalar dependencias
+        run: pip install requests
 
       - name: Migrar posiciones sandbox en DB
         run: python3 migrate_sandbox.py
@@ -77,11 +79,8 @@ jobs:
           cp pwbot_overshoot_positions.csv /tmp/positions.csv
           cp pwbot_overshoot_closed.csv    /tmp/closed.csv
 
-          # ── gh-pages ──
           git fetch origin gh-pages
-          git stash --include-untracked
-          git checkout gh-pages
-          git stash pop || true
+          git checkout -f gh-pages
 
           cp /tmp/index.html   index.html
           cp /tmp/closed.html  closed.html
@@ -92,15 +91,12 @@ jobs:
           git pull --rebase origin gh-pages || true
           git push origin gh-pages
 
-          # ── main ──
-          git stash --include-untracked
-          git checkout main
-          git stash pop || true
+          git checkout -f main
 
           cp /tmp/positions.csv pwbot_overshoot_positions.csv
           cp /tmp/closed.csv    pwbot_overshoot_closed.csv
 
-          git add -f pwbot_overshoot_positions.csv pwbot_overshoot_closed.csv || true
+          git add -f pwbot_overshoot_positions.csv pwbot_overshoot_closed.csv
           git diff --staged --quiet || git commit -m "📦 Data update [run #${{ github.run_number }}]"
           git pull --rebase origin main || true
           git push origin main
