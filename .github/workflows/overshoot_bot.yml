@@ -71,7 +71,6 @@ jobs:
           git config --global user.email "bot@pwbot-overshoot"
           git config --global user.name "Overshoot Bot"
 
-          # Guardar artefactos temporalmente
           cp index.html   /tmp/index.html
           cp closed.html  /tmp/closed.html
           cp sandbox.html /tmp/sandbox.html
@@ -80,13 +79,8 @@ jobs:
 
           # ── gh-pages ──
           git fetch origin gh-pages
-
-          # Stash cambios locales antes del checkout
           git stash --include-untracked
-
           git checkout gh-pages
-
-          # Recuperar cambios del stash
           git stash pop || true
 
           cp /tmp/index.html   index.html
@@ -99,166 +93,10 @@ jobs:
           git push origin gh-pages
 
           # ── main ──
-          # Stash cambios locales antes del checkout
           git stash --include-untracked
-
           git checkout main
-
-          # Recuperar cambios del stash
           git stash pop || true
 
-          cp /tmp/positions.csv pwbot_overshoot_positions.csv
-          cp /tmp/closed.csv    pwbot_overshoot_closed.csv
-
-          git add -f pwbot_overshoot_positions.csv pwbot_overshoot_closed.csv || true
-          git diff --staged --quiet || git commit -m "📦 Data update [run #${{ github.run_number }}]"
-          git pull --rebase origin main || true
-          git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Instalar dependencias
-        uses: actions/cache@v4
-        id: pip-cache
-        with:
-          path: ~/.cache/pip
-          key: pip-requests-${{ runner.os }}
-      - run: pip install requests
-
-      - name: Migrar posiciones sandbox en DB
-        run: python3 migrate_sandbox.py
-
-      - name: Correr bot
-        run: python pwbot_overshoot.py
-
-      - name: Subir log como artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: overshoot-log-${{ github.run_number }}
-          path: pwbot_overshoot.log
-          retention-days: 30
-
-      - name: Subir posiciones como artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: positions-${{ github.run_number }}
-          path: |
-            pwbot_overshoot_positions.csv
-            pwbot_overshoot_closed.csv
-          retention-days: 90
-
-      - name: Publicar HTML y guardar CSVs
-        run: |
-          git config --global user.email "bot@pwbot-overshoot"
-          git config --global user.name "Overshoot Bot"
-
-          # Guardar artefactos temporalmente
-          cp index.html   /tmp/index.html
-          cp closed.html  /tmp/closed.html
-          cp sandbox.html /tmp/sandbox.html
-          cp pwbot_overshoot_positions.csv /tmp/positions.csv
-          cp pwbot_overshoot_closed.csv    /tmp/closed.csv
-
-          # ── gh-pages ──
-          git fetch origin gh-pages
-
-          # Stash cambios locales antes del checkout
-          git stash --include-untracked
-
-          git checkout gh-pages
-
-          # Recuperar cambios del stash
-          git stash pop || true
-
-          cp /tmp/index.html   index.html
-          cp /tmp/closed.html  closed.html
-          cp /tmp/sandbox.html sandbox.html
-
-          git add index.html closed.html sandbox.html
-          git diff --staged --quiet || git commit -m "📊 Dashboard update [run #${{ github.run_number }}]"
-          git pull --rebase origin gh-pages || true
-          git push origin gh-pages
-
-          # ── main ──
-          # Stash cambios locales antes del checkout
-          git stash --include-untracked
-
-          git checkout main
-
-          # Recuperar cambios del stash
-          git stash pop || true
-
-          cp /tmp/positions.csv pwbot_overshoot_positions.csv
-          cp /tmp/closed.csv    pwbot_overshoot_closed.csv
-
-          git add -f pwbot_overshoot_positions.csv pwbot_overshoot_closed.csv || true
-          git diff --staged --quiet || git commit -m "📦 Data update [run #${{ github.run_number }}]"
-          git pull --rebase origin main || true
-          git push origin main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-
-      - name: Instalar dependencias
-        uses: actions/cache@v4        # ⚡ cache de pip
-        id: pip-cache
-        with:
-          path: ~/.cache/pip
-          key: pip-requests-${{ runner.os }}
-      - run: pip install requests
-
-      - name: Migrar posiciones sandbox en DB
-        run: python3 migrate_sandbox.py
-
-      - name: Correr bot
-        run: python pwbot_overshoot.py
-
-      - name: Subir log como artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: overshoot-log-${{ github.run_number }}
-          path: pwbot_overshoot.log
-          retention-days: 30
-
-      - name: Subir posiciones como artifact
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: positions-${{ github.run_number }}
-          path: |
-            pwbot_overshoot_positions.csv
-            pwbot_overshoot_closed.csv
-          retention-days: 90
-
-      - name: Publicar HTML y guardar CSVs
-        run: |
-          git config --global user.email "bot@pwbot-overshoot"
-          git config --global user.name "Overshoot Bot"
-
-          # Guardar artefactos temporalmente
-          cp index.html   /tmp/index.html
-          cp closed.html  /tmp/closed.html
-          cp sandbox.html /tmp/sandbox.html
-          cp pwbot_overshoot_positions.csv /tmp/positions.csv
-          cp pwbot_overshoot_closed.csv    /tmp/closed.csv
-
-          # ── gh-pages ──
-          git fetch origin gh-pages
-          git checkout gh-pages
-
-          cp /tmp/index.html   index.html
-          cp /tmp/closed.html  closed.html
-          cp /tmp/sandbox.html sandbox.html
-
-          git add index.html closed.html sandbox.html
-          git diff --staged --quiet || git commit -m "📊 Dashboard update [run #${{ github.run_number }}]"
-          git pull --rebase origin gh-pages || true
-          git push origin gh-pages
-
-          # ── main ── (⚡ un solo checkout en lugar de dos operaciones git separadas)
-          git checkout main
           cp /tmp/positions.csv pwbot_overshoot_positions.csv
           cp /tmp/closed.csv    pwbot_overshoot_closed.csv
 
