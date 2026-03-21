@@ -671,9 +671,11 @@ def fetch_forecasts_for_city(city: str) -> dict:
 def parse_market_threshold(question: str) -> Optional[dict]:
     """
     Extrae el threshold y tipo del mercado.
-    Solo nos interesan mercados "above_equal" (or higher) y "exact" (be X° on date).
-    Para la estrategia overshoot necesitamos el LÍMITE INFERIOR del threshold.
-    
+    Tipos soportados:
+      - "above_equal": "be 30°C or higher" / "above 30" → token NO gana si temp < threshold
+      - "below_equal": "be 59°F or below" / "below 59" → token NO gana si temp > threshold
+      - "exact":       "be 30°C on March 7"             → token NO gana si temp != threshold
+
     Retorna: {threshold, type, unit}
     """
     q    = question.lower()
@@ -687,6 +689,16 @@ def parse_market_threshold(question: str) -> Optional[dict]:
     m = re.search(r'(?:above|over)\s+(-?\d+\.?\d*)', q)
     if m:
         return {"threshold": float(m.group(1)), "type": "above_equal", "unit": unit}
+
+    # below_equal: "be 59°F or below" / "be 59°F or lower" → threshold = 59
+    # Token NO gana si la temp SUPERA el threshold (mercado no se cumple)
+    m = re.search(r'be\s+(-?\d+\.?\d*)\s*(?:°[cf])?\s*or\s+(?:below|lower)', q)
+    if m:
+        return {"threshold": float(m.group(1)), "type": "below_equal", "unit": unit}
+
+    m = re.search(r'(?:below|under)\s+(-?\d+\.?\d*)', q)
+    if m:
+        return {"threshold": float(m.group(1)), "type": "below_equal", "unit": unit}
 
     # exact: "be 30°C on March 7"
     m = re.search(r'be\s+(-?\d+\.?\d*)\s*(?:°[cf])?\s+on\b', q)
@@ -1502,10 +1514,22 @@ class OvershootBot:
     def _resolve_expired(self, pos: dict, no_price_now, sim_stake: float):
         """
         Consulta la temperatura máxima real del aeropuerto ICAO oficial (IEM ASOS) y determina WIN o LOSS.
-        
-        Compramos token NO apostando a que el threshold NO se alcanzará.
-        - WIN: temperatura real < threshold  → el NO vale 1.0 → cobro completo
-        - LOSS: temperatura real >= threshold → el NO vale 0.0 → perdemos todo
+
+        Compramos token NO apostando a que el mercado NO se resuelve YES.
+        La condición de WIN depende del tipo de mercado:
+
+          above_equal: "be X or higher"
+            - El mercado resuelve YES si temp >= threshold
+            - Token NO gana (WIN) si temp < threshold
+
+          below_equal: "be X or below"
+            - El mercado resuelve YES si temp <= threshold
+            - Token NO gana (WIN) si temp > threshold
+
+          exact: "be exactly X"
+            - El mercado resuelve YES si temp == threshold (tolerancia ±0.5°)
+            - Token NO gana (WIN) si temp != threshold
+
         - UNKNOWN: sin datos aún → dejar abierta, intentar en el próximo run
         """
         pos_id    = pos["id"]
@@ -1513,6 +1537,7 @@ class OvershootBot:
         date_str  = pos["date_str"]
         threshold = pos["market_threshold"]
         unit      = pos["unit"]
+        mtype     = (pos.get("market_type") or "above_equal").lower()
         no_ask_entry = pos["no_ask_entry"]
 
         actual_temp = fetch_actual_temp(city, date_str)
@@ -1526,19 +1551,42 @@ class OvershootBot:
 
         tokens = sim_stake / no_ask_entry if no_ask_entry else 0
 
-        if actual_temp < threshold:
-            # El threshold NO se alcanzó → token NO vale 1.0 → WIN
+        # Determinar si el mercado resolvió YES (lo que nos hace perder el NO)
+        if mtype == "below_equal":
+            # Mercado YES = temp <= threshold  →  NO gana si temp > threshold
+            market_resolved_yes = actual_temp <= threshold
+            condition_str = (
+                f"real={actual_temp}°{unit} {'<=' if market_resolved_yes else '>'} "
+                f"threshold={threshold}°{unit} [below_equal]"
+            )
+        elif mtype == "exact":
+            # Mercado YES = temp == threshold (±0.5°)  →  NO gana si temp != threshold
+            market_resolved_yes = abs(actual_temp - threshold) <= 0.5
+            condition_str = (
+                f"real={actual_temp}°{unit} {'≈' if market_resolved_yes else '≠'} "
+                f"threshold={threshold}°{unit} [exact ±0.5°]"
+            )
+        else:
+            # above_equal (default): Mercado YES = temp >= threshold  →  NO gana si temp < threshold
+            market_resolved_yes = actual_temp >= threshold
+            condition_str = (
+                f"real={actual_temp}°{unit} {'>=' if market_resolved_yes else '<'} "
+                f"threshold={threshold}°{unit} [above_equal]"
+            )
+
+        if not market_resolved_yes:
+            # El mercado NO se cumplió → token NO vale 1.0 → WIN
             val_close = 1.0 * tokens
             pnl       = val_close - sim_stake
             pnl_pct   = pnl / sim_stake * 100
             self.db.close_position(pos_id, "WIN", "EXPIRED_WIN", 1.0, pnl, pnl_pct)
             log.info(
                 f"  ✅ WIN #{pos_id} {city} {date_str}  "
-                f"real={actual_temp}°{unit} < threshold={threshold}°{unit}  "
+                f"{condition_str}  "
                 f"PnL={pnl:+.3f}$ ({pnl_pct:+.1f}%)"
             )
         else:
-            # El threshold SÍ se alcanzó → token NO vale 0.0 → LOSS
+            # El mercado SÍ se cumplió → token NO vale 0.0 → LOSS
             val_close = 0.0
             pnl       = val_close - sim_stake
             pnl_pct   = -100.0
@@ -1546,7 +1594,7 @@ class OvershootBot:
             self.db.close_position(pos_id, "LOSS", "EXPIRED_LOSS", close_price, pnl, pnl_pct)
             log.info(
                 f"  ❌ LOSS #{pos_id} {city} {date_str}  "
-                f"real={actual_temp}°{unit} >= threshold={threshold}°{unit}  "
+                f"{condition_str}  "
                 f"PnL={pnl:+.3f}$ ({pnl_pct:+.1f}%)"
             )
 
