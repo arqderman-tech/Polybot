@@ -105,8 +105,9 @@ CITIES = {
         "mb_url":"https://www.meteoblue.com/en/weather/forecast/multimodel/chicago_united-states_4887398"},
     "Los Angeles":  {"slug":"los-angeles","unit":"F","flag":"US",
         "lat":34.0522,"lon":-118.2437,"tz":"America/Los_Angeles",
-        "mb_url":"https://www.meteoblue.com/en/weather/forecast/multimodel/los-angeles_united-states_5368361"},
-    "Seattle":      {"slug":"seattle","unit":"F","flag":"US",
+        "mb_url":"https://www.meteoblue.com/en/weather/forecast/multimodel/los-angeles_united-states_5368361",
+        "sandbox": True},  # perdedor habitual — modo prueba
+		"Seattle":      {"slug":"seattle","unit":"F","flag":"US",
         "lat":47.6062,"lon":-122.3321,"tz":"America/Los_Angeles",
         "mb_url":"https://www.meteoblue.com/en/weather/forecast/multimodel/seattle_united-states_5809844"},
     "Atlanta":      {"slug":"atlanta","unit":"F","flag":"US",
